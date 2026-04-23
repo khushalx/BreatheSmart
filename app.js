@@ -1,73 +1,88 @@
-/* global L, CONFIG */
+/* global L */
 
 (function () {
   "use strict";
 
   const DEFAULT_CITY = "Delhi";
   const DEFAULT_COORDS = [28.6139, 77.2090];
-  const WAQI_BASE_URL = "https://api.waqi.info";
+  const GEOCODING_BASE_URL = "https://geocoding-api.open-meteo.com/v1/search";
+  const AIR_QUALITY_BASE_URL = "https://air-quality-api.open-meteo.com/v1/air-quality";
   const MAX_AQI_FOR_SCALE = 300;
+  const REQUEST_TIMEOUT_MS = 12000;
+
+  const CURRENT_FIELDS = [
+    "us_aqi",
+    "pm2_5",
+    "pm10",
+    "carbon_monoxide",
+    "nitrogen_dioxide",
+    "sulphur_dioxide",
+    "ozone"
+  ];
+
+  const SAMPLE_OFFSETS = [
+    { key: "center", label: "Center", lat: 0, lon: 0 },
+    { key: "north", label: "North sample", lat: 0.18, lon: 0 },
+    { key: "south", label: "South sample", lat: -0.18, lon: 0 },
+    { key: "east", label: "East sample", lat: 0, lon: 0.18 },
+    { key: "west", label: "West sample", lat: 0, lon: -0.18 }
+  ];
 
   const AQI_LEVELS = [
     {
       max: 50,
       key: "good",
       label: "Good",
-      color: "#1f9d55",
       tip: "Air quality is good. It is a comfortable time for outdoor plans."
     },
     {
       max: 100,
       key: "moderate",
       label: "Moderate",
-      color: "#c89208",
       tip: "Air quality is acceptable. Sensitive groups may prefer shorter outdoor activity."
     },
     {
       max: 150,
       key: "unhealthy-sensitive",
       label: "Unhealthy for Sensitive Groups",
-      color: "#f2994a",
       tip: "Children, older adults, and people with breathing concerns should reduce prolonged exertion."
     },
     {
       max: 200,
       key: "unhealthy",
       label: "Unhealthy",
-      color: "#eb5757",
       tip: "Limit outdoor activity. Consider a mask outdoors and keep windows closed near traffic."
     },
     {
       max: 300,
       key: "very-unhealthy",
       label: "Very Unhealthy",
-      color: "#9b51e0",
       tip: "Avoid outdoor exertion. Run air purification indoors if available."
     },
     {
       max: Infinity,
       key: "hazardous",
       label: "Hazardous",
-      color: "#7f1d1d",
       tip: "Stay indoors and avoid physical exertion. Follow local health guidance."
     }
   ];
 
   const POLLUTANT_LABELS = {
-    pm25: "PM2.5",
+    pm2_5: "PM2.5",
     pm10: "PM10",
-    o3: "O3",
-    no2: "NO2",
-    so2: "SO2",
-    co: "CO"
+    carbon_monoxide: "CO",
+    nitrogen_dioxide: "NO2",
+    sulphur_dioxide: "SO2",
+    ozone: "O3"
   };
 
   const state = {
     map: null,
     markersLayer: null,
     selectedCoords: DEFAULT_COORDS,
-    selectedCity: DEFAULT_CITY,
-    lastStation: null,
+    selectedPlaceName: DEFAULT_CITY,
+    mainPoint: null,
+    nearbySamples: [],
     isLoading: false
   };
 
@@ -79,8 +94,9 @@
     cacheElements();
     bindEvents();
     initMap();
-    console.log("[BreatheSmart] Dashboard initialized");
-    fetchCityAQI(DEFAULT_CITY);
+    updateOpenMeteoLabels();
+    console.log("[BreatheSmart] Open-Meteo dashboard initialized", window.CONFIG || {});
+    searchCity(DEFAULT_CITY);
   }
 
   function cacheElements() {
@@ -97,7 +113,9 @@
     els.scaleMarker = document.querySelector("#aqi-scale-marker");
     els.healthTip = document.querySelector("#health-tip-text");
     els.pollutantsGrid = document.querySelector("#pollutants-grid");
+    els.pollutantsSource = document.querySelector("#pollutants-source");
     els.stationCount = document.querySelector("#station-count");
+    els.stationsTitle = document.querySelector("#stations-title");
     els.stationsList = document.querySelector("#nearby-stations-list");
     els.mapResetButton = document.querySelector("#map-reset-button");
     els.loadingOverlay = document.querySelector("#loading-overlay");
@@ -116,40 +134,53 @@
     els.locationButton?.addEventListener("click", handleLocationClick);
     els.mapResetButton?.addEventListener("click", resetMapView);
     els.errorDismissButton?.addEventListener("click", hideError);
-    els.modalClose?.addEventListener("click", closeStationModal);
+    els.modalClose?.addEventListener("click", closeModal);
 
     els.modal?.addEventListener("click", function (event) {
-      if (event.target === els.modal) {
-        closeStationModal();
+      if (event?.target === els.modal) {
+        closeModal();
       }
     });
+  }
+
+  function updateOpenMeteoLabels() {
+    setText(els.pollutantsSource, "Open-Meteo grid");
+    setText(els.stationsTitle, "Nearby AQI Samples");
+
+    const emptyItem = els.stationsList?.querySelector?.(".empty-state");
+    setText(emptyItem, "Nearby sampled AQI points will load with the map.");
   }
 
   function initMap() {
     const mapElement = document.querySelector("#map");
 
     if (!mapElement || typeof L === "undefined") {
-      console.warn("[BreatheSmart] Leaflet is unavailable or map element is missing");
+      console.error("[BreatheSmart] Leaflet unavailable or #map missing");
       showError("Map library could not load. AQI details can still appear in the sidebar.");
       return;
     }
 
-    state.map = L.map(mapElement, {
-      zoomControl: true,
-      preferCanvas: true
-    }).setView(DEFAULT_COORDS, 10);
+    try {
+      state.map = L.map(mapElement, {
+        zoomControl: true,
+        preferCanvas: true
+      }).setView(DEFAULT_COORDS, 10);
 
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 18,
-      attribution: "&copy; OpenStreetMap contributors"
-    }).addTo(state.map);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 18,
+        attribution: "&copy; OpenStreetMap contributors"
+      }).addTo(state.map);
 
-    state.markersLayer = L.layerGroup().addTo(state.map);
-    console.log("[BreatheSmart] Leaflet map ready");
+      state.markersLayer = L.layerGroup().addTo(state.map);
+      console.log("[BreatheSmart] Leaflet map ready");
+    } catch (error) {
+      console.error("[BreatheSmart] Map initialization failed", error);
+      showError("The map could not be initialized, but AQI details may still load.");
+    }
   }
 
   async function handleSearchSubmit(event) {
-    event.preventDefault();
+    event?.preventDefault?.();
     const city = els.searchInput?.value?.trim();
 
     if (!city) {
@@ -157,38 +188,100 @@
       return;
     }
 
-    await fetchCityAQI(city);
+    await searchCity(city);
+  }
+
+  async function searchCity(cityName) {
+    const safeCity = cityName?.trim?.() || DEFAULT_CITY;
+    console.log("[BreatheSmart] Searching city with Open-Meteo geocoding", safeCity);
+    showLoading(true, `Searching ${safeCity}...`);
+    setControlState(true);
+
+    try {
+      const place = await geocodeCity(safeCity);
+
+      if (!place) {
+        throw new Error(`No geocoding result found for "${safeCity}".`);
+      }
+
+      const point = await fetchAirQualityByCoords(place.latitude, place.longitude, {
+        name: formatPlaceName(place),
+        sampleLabel: "Center",
+        sampleKey: "center",
+        isMain: true
+      });
+
+      updateMainUI(point);
+      updateSelectedPoint(point);
+      await fetchNearbySamples(point);
+      setLiveStatus("Open-Meteo live data loaded", "live");
+    } catch (error) {
+      console.error("[BreatheSmart] City search failed", error);
+      showFallbackUI(safeCity);
+      showError(error?.message || "Unable to load AQI for that city.");
+      setLiveStatus("AQI unavailable", "error");
+    } finally {
+      showLoading(false);
+      setControlState(false);
+    }
+  }
+
+  async function geocodeCity(cityName) {
+    const params = new URLSearchParams({
+      name: cityName || DEFAULT_CITY,
+      count: "1",
+      language: "en",
+      format: "json"
+    });
+    const payload = await fetchJSON(`${GEOCODING_BASE_URL}?${params.toString()}`, "geocoding");
+    const result = Array.isArray(payload?.results) ? payload.results[0] : null;
+    const latitude = Number(result?.latitude);
+    const longitude = Number(result?.longitude);
+
+    if (!result || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      return null;
+    }
+
+    const updateTime = current?.time || (payload?.generationtime_ms ? "Recently updated" : "Time unavailable");
+
+    return {
+      ...result,
+      latitude,
+      longitude
+    };
   }
 
   function handleLocationClick() {
-    if (!navigator.geolocation) {
+    if (!navigator?.geolocation) {
       showError("Geolocation is not available in this browser.");
       return;
     }
 
-    setLoading(true, "Finding your location...");
+    console.log("[BreatheSmart] Requesting browser location");
+    showLoading(true, "Finding your location...");
     setControlState(true);
 
     navigator.geolocation.getCurrentPosition(
       async function (position) {
-        const latitude = position?.coords?.latitude;
-        const longitude = position?.coords?.longitude;
+        const latitude = Number(position?.coords?.latitude);
+        const longitude = Number(position?.coords?.longitude);
 
         if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-          setLoading(false);
+          console.error("[BreatheSmart] Browser returned invalid coordinates", position);
+          showLoading(false);
           setControlState(false);
           showError("Your browser returned an invalid location.");
           return;
         }
 
-        console.log("[BreatheSmart] Geolocation acquired", { latitude, longitude });
-        await fetchAQIByCoords(latitude, longitude);
+        await loadLocationAQI(latitude, longitude, "My Location");
       },
       function (error) {
-        console.warn("[BreatheSmart] Geolocation failed", error);
-        setLoading(false);
+        console.error("[BreatheSmart] Geolocation failed", error);
+        showLoading(false);
         setControlState(false);
         showError(error?.message || "Unable to access your location.");
+        setLiveStatus("Location unavailable", "error");
       },
       {
         enableHighAccuracy: false,
@@ -198,211 +291,452 @@
     );
   }
 
-  async function fetchCityAQI(city) {
-    console.log("[BreatheSmart] Fetching city AQI", city);
-    state.selectedCity = city;
-    setLoading(true, `Loading AQI for ${city}...`);
-    setControlState(true);
+  async function loadLocationAQI(latitude, longitude, label) {
+    console.log("[BreatheSmart] Loading AQI for coordinates", { latitude, longitude });
+    showLoading(true, "Loading AQI for your location...");
 
     try {
-      const station = await fetchWAQI(`/feed/${encodeURIComponent(city)}/`);
-      const normalized = normalizeStation(station?.data);
+      const point = await fetchAirQualityByCoords(latitude, longitude, {
+        name: label || "Selected location",
+        sampleLabel: "Center",
+        sampleKey: "center",
+        isMain: true
+      });
 
-      if (!normalized) {
-        throw new Error("WAQI returned an invalid city response.");
-      }
-
-      updateSidebar(normalized);
-      updateSelectedStation(normalized);
-      await fetchNearbyStations(normalized.lat, normalized.lon);
-      setLiveStatus("Live data loaded", "live");
-    } catch (error) {
-      console.error("[BreatheSmart] City AQI failed", error);
-      showFallbackUI(city);
-      showError(error?.message || "Unable to load city AQI.");
-      setLiveStatus("AQI unavailable", "error");
-    } finally {
-      setLoading(false);
-      setControlState(false);
-    }
-  }
-
-  async function fetchAQIByCoords(latitude, longitude) {
-    console.log("[BreatheSmart] Fetching AQI by coordinates", { latitude, longitude });
-
-    try {
-      const station = await fetchWAQI(`/feed/geo:${latitude};${longitude}/`);
-      const normalized = normalizeStation(station?.data);
-
-      if (!normalized) {
-        throw new Error("WAQI returned an invalid location response.");
-      }
-
-      updateSidebar(normalized);
-      updateSelectedStation(normalized);
-      await fetchNearbyStations(normalized.lat, normalized.lon);
-      setLiveStatus("Live data loaded", "live");
+      updateMainUI(point);
+      updateSelectedPoint(point);
+      await fetchNearbySamples(point);
+      setLiveStatus("Open-Meteo live data loaded", "live");
     } catch (error) {
       console.error("[BreatheSmart] Location AQI failed", error);
-      showFallbackUI("Your location");
+      showFallbackUI(label || "Your location");
       showError(error?.message || "Unable to load AQI for your location.");
       setLiveStatus("AQI unavailable", "error");
     } finally {
-      setLoading(false);
+      showLoading(false);
       setControlState(false);
     }
   }
 
-  async function fetchNearbyStations(latitude, longitude) {
-    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-      console.warn("[BreatheSmart] Skipping nearby stations: invalid coordinates");
-      renderNearbyStations([]);
+  async function fetchAirQualityByCoords(latitude, longitude, options) {
+    const safeLat = Number(latitude);
+    const safeLon = Number(longitude);
+
+    if (!Number.isFinite(safeLat) || !Number.isFinite(safeLon)) {
+      throw new Error("Invalid coordinates for air-quality request.");
+    }
+
+    const params = new URLSearchParams({
+      latitude: String(safeLat),
+      longitude: String(safeLon),
+      current: CURRENT_FIELDS.join(","),
+      timezone: "auto"
+    });
+
+    const payload = await fetchJSON(`${AIR_QUALITY_BASE_URL}?${params.toString()}`, "air-quality");
+    return normalizeAirQualityPoint(payload, {
+      latitude: safeLat,
+      longitude: safeLon,
+      name: options?.name || "AQI sample",
+      sampleLabel: options?.sampleLabel || "Sample",
+      sampleKey: options?.sampleKey || "sample",
+      isMain: Boolean(options?.isMain)
+    });
+  }
+
+  async function fetchNearbySamples(centerPoint) {
+    if (!centerPoint || !Number.isFinite(centerPoint?.lat) || !Number.isFinite(centerPoint?.lon)) {
+      console.error("[BreatheSmart] Nearby samples skipped: invalid center point", centerPoint);
+      state.nearbySamples = [];
+      renderNearbyList([]);
+      renderMapMarkers();
       return;
     }
 
-    console.log("[BreatheSmart] Fetching nearby stations", { latitude, longitude });
-    const delta = 0.35;
-    const bounds = [
-      latitude - delta,
-      longitude - delta,
-      latitude + delta,
-      longitude + delta
-    ];
+    console.log("[BreatheSmart] Fetching nearby sampled AQI points", centerPoint);
 
-    try {
-      const response = await fetchWAQI(`/map/bounds/?latlng=${bounds.join(",")}`);
-      const stations = Array.isArray(response?.data) ? response.data : [];
-      const normalizedStations = stations
-        .map(function (station) {
-          try {
-            return normalizeMapStation(station);
-          } catch (error) {
-            console.warn("[BreatheSmart] Broken station skipped", station, error);
-            return null;
-          }
-        })
-        .filter(Boolean)
-        .slice(0, 40);
+    const requests = SAMPLE_OFFSETS.map(function (offset) {
+      const lat = centerPoint.lat + offset.lat;
+      const lon = centerPoint.lon + offset.lon;
+      const sampleName = offset.key === "center"
+        ? `${centerPoint.name} center`
+        : `${centerPoint.name} ${offset.label}`;
 
-      renderNearbyStations(normalizedStations);
-      renderMapMarkers(normalizedStations);
-    } catch (error) {
-      console.error("[BreatheSmart] Nearby stations failed", error);
-      renderNearbyStations([]);
-      renderMapMarkers([]);
-      showError("Nearby stations could not be loaded, but the selected city's AQI may still be available.");
-    }
+      return fetchAirQualityByCoords(lat, lon, {
+        name: sampleName,
+        sampleLabel: offset.label,
+        sampleKey: offset.key,
+        isMain: offset.key === "center"
+      });
+    });
+
+    const settled = await Promise.allSettled(requests);
+    const samples = [];
+
+    settled.forEach(function (result, index) {
+      try {
+        if (result?.status === "fulfilled" && result?.value) {
+          samples.push(result.value);
+          return;
+        }
+
+        console.error("[BreatheSmart] Nearby sample failed", {
+          sample: SAMPLE_OFFSETS[index]?.label || index,
+          reason: result?.reason
+        });
+      } catch (error) {
+        console.error("[BreatheSmart] Error while processing nearby sample result", error);
+      }
+    });
+
+    state.nearbySamples = samples;
+    renderNearbyList(samples);
+    renderMapMarkers();
   }
 
-  async function fetchWAQI(path) {
-    const token = getToken();
-
-    if (!token) {
-      throw new Error("Missing WAQI API token. Add it in config.js.");
-    }
-
-    const url = `${WAQI_BASE_URL}${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
+  async function fetchJSON(url, context) {
     const controller = new AbortController();
     const timeoutId = window.setTimeout(function () {
       controller.abort();
-    }, 12000);
+    }, REQUEST_TIMEOUT_MS);
 
     try {
       const response = await fetch(url, { signal: controller.signal });
 
-      if (!response.ok) {
-        throw new Error(`WAQI request failed with HTTP ${response.status}.`);
+      if (!response?.ok) {
+        throw new Error(`${context || "Request"} failed with HTTP ${response?.status || "unknown"}.`);
       }
 
-      const payload = await response.json();
-
-      if (payload?.status !== "ok") {
-        const message = payload?.data || payload?.message || "WAQI returned a non-ok status.";
-        throw new Error(String(message));
+      return await response.json();
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        console.error(`[BreatheSmart] ${context || "Request"} timed out`, { url });
+        throw new Error("The air-quality request timed out. Please try again.");
       }
 
-      return payload;
+      console.error(`[BreatheSmart] ${context || "Request"} failed`, error);
+      throw error;
     } finally {
       window.clearTimeout(timeoutId);
     }
   }
 
-  function getToken() {
-    const token = window.CONFIG?.WAQI_TOKEN || (typeof CONFIG !== "undefined" ? CONFIG?.WAQI_TOKEN : "");
+  function normalizeAirQualityPoint(payload, meta) {
+    const current = payload?.current || {};
+    const currentUnits = payload?.current_units || {};
+    const aqi = parseNumber(current?.us_aqi);
+    const pollutants = {};
 
-    if (!token || token === "YOUR_WAQI_API_TOKEN") {
-      return "";
-    }
-
-    return token;
-  }
-
-  function normalizeStation(raw) {
-    if (!raw || typeof raw !== "object") {
-      return null;
-    }
-
-    const aqi = parseAQI(raw?.aqi);
-    const cityName = raw?.city?.name || raw?.attributions?.[0]?.name || state.selectedCity || "Unknown station";
-    const geo = Array.isArray(raw?.city?.geo) ? raw.city.geo : [];
-    const lat = Number(geo?.[0]);
-    const lon = Number(geo?.[1]);
-    const iaqi = raw?.iaqi && typeof raw.iaqi === "object" ? raw.iaqi : {};
+    Object.keys(POLLUTANT_LABELS).forEach(function (key) {
+      pollutants[key] = parseNumber(current?.[key]);
+    });
 
     return {
-      uid: raw?.idx || raw?.city?.url || cityName,
-      name: cityName,
+      id: `${meta?.sampleKey || "sample"}-${meta?.latitude}-${meta?.longitude}`,
+      name: meta?.name || "AQI sample",
+      sampleLabel: meta?.sampleLabel || "Sample",
+      sampleKey: meta?.sampleKey || "sample",
+      isMain: Boolean(meta?.isMain),
       aqi,
       level: getAQILevel(aqi),
-      lat: Number.isFinite(lat) ? lat : DEFAULT_COORDS[0],
-      lon: Number.isFinite(lon) ? lon : DEFAULT_COORDS[1],
-      time: raw?.time?.s || raw?.time?.iso || "Time unavailable",
-      url: raw?.city?.url || "",
-      pollutants: normalizePollutants(iaqi),
-      raw
+      lat: Number(meta?.latitude),
+      lon: Number(meta?.longitude),
+      time: updateTime,
+      timezone: payload?.timezone || "Local timezone",
+      pollutants,
+      units: currentUnits,
+      raw: payload || {}
     };
   }
 
-  function normalizeMapStation(raw) {
-    if (!raw || typeof raw !== "object") {
-      return null;
+  function updateMainUI(point) {
+    if (!point) {
+      return;
     }
 
-    const lat = Number(raw?.lat);
-    const lon = Number(raw?.lon);
+    const level = point?.level || getAQILevel(point?.aqi);
 
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-      return null;
+    setText(els.cityName, point?.name || "Selected location");
+    setText(els.lastUpdated, point?.time ? `Updated ${point.time}` : "Update time unavailable");
+    setText(els.aqiNumber, Number.isFinite(point?.aqi) ? point.aqi : "--");
+    setText(els.aqiLabel, level?.label || "Unknown");
+    setText(els.healthTip, level?.tip || "AQI guidance is unavailable for this location.");
+
+    updateAQIBadge(level?.key);
+    updateScaleMarker(point?.aqi);
+    renderPollutants(point?.pollutants, point?.units);
+  }
+
+  function updateSelectedPoint(point) {
+    if (!point) {
+      return;
     }
 
-    const aqi = parseAQI(raw?.aqi);
-    const name = raw?.station?.name || raw?.name || "Unnamed station";
+    state.mainPoint = point;
+    state.selectedPlaceName = point?.name || DEFAULT_CITY;
+    state.selectedCoords = [
+      Number.isFinite(point?.lat) ? point.lat : DEFAULT_COORDS[0],
+      Number.isFinite(point?.lon) ? point.lon : DEFAULT_COORDS[1]
+    ];
 
-    return {
-      uid: raw?.uid || `${name}-${lat}-${lon}`,
-      name,
-      aqi,
-      level: getAQILevel(aqi),
-      lat,
-      lon,
-      time: raw?.station?.time || "Time unavailable",
-      url: raw?.station?.url || "",
+    if (state.map && Number.isFinite(point?.lat) && Number.isFinite(point?.lon)) {
+      try {
+        state.map.setView([point.lat, point.lon], 11);
+      } catch (error) {
+        console.error("[BreatheSmart] Unable to move map to selected point", error);
+      }
+    }
+  }
+
+  function renderPollutants(pollutants, units) {
+    if (!els.pollutantsGrid) {
+      return;
+    }
+
+    try {
+      const safePollutants = pollutants || {};
+      const safeUnits = units || {};
+      const html = Object.keys(POLLUTANT_LABELS).map(function (key) {
+        const value = safePollutants?.[key];
+        const unit = safeUnits?.[key] || "";
+        const displayValue = Number.isFinite(value) ? formatNumber(value) : "--";
+        const displayUnit = unit ? ` ${escapeHTML(unit)}` : "";
+
+        return `
+          <article class="pollutant-tile">
+            <span>${escapeHTML(POLLUTANT_LABELS[key])}</span>
+            <strong>${escapeHTML(displayValue)}${displayUnit}</strong>
+          </article>
+        `;
+      }).join("");
+
+      els.pollutantsGrid.innerHTML = html;
+    } catch (error) {
+      console.error("[BreatheSmart] Failed to render pollutants", error);
+    }
+  }
+
+  function renderNearbyList(samples) {
+    const safeSamples = Array.isArray(samples) ? samples : [];
+    setText(els.stationCount, `${safeSamples.length} samples`);
+
+    if (!els.stationsList) {
+      return;
+    }
+
+    if (!safeSamples.length) {
+      els.stationsList.innerHTML = `<li class="empty-state">No nearby sampled AQI points available.</li>`;
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+
+    safeSamples.forEach(function (sample) {
+      try {
+        const item = document.createElement("li");
+        const button = document.createElement("button");
+        button.className = "station-item";
+        button.type = "button";
+        button.innerHTML = `
+          <span class="station-row">
+            <span class="station-name">${escapeHTML(sample?.sampleLabel || sample?.name || "AQI sample")}</span>
+            <span class="station-aqi">${Number.isFinite(sample?.aqi) ? sample.aqi : "--"}</span>
+          </span>
+          <span class="station-meta">${escapeHTML(sample?.level?.label || "Unknown")} - ${escapeHTML(formatCoords(sample?.lat, sample?.lon))}</span>
+        `;
+        button.addEventListener("click", function () {
+          focusPoint(sample);
+        });
+        item.appendChild(button);
+        fragment.appendChild(item);
+      } catch (error) {
+        console.error("[BreatheSmart] Failed to render one nearby sample", { sample, error });
+      }
+    });
+
+    els.stationsList.replaceChildren(fragment);
+  }
+
+  function renderMapMarkers() {
+    if (!state.map || !state.markersLayer || typeof L === "undefined") {
+      return;
+    }
+
+    try {
+      state.markersLayer.clearLayers();
+    } catch (error) {
+      console.error("[BreatheSmart] Could not clear map markers", error);
+      return;
+    }
+
+    const points = [state.mainPoint].concat(state.nearbySamples || []).filter(Boolean);
+    const seen = new Set();
+
+    points.forEach(function (point) {
+      try {
+        const key = `${point?.sampleKey || "point"}:${point?.lat}:${point?.lon}`;
+        if (seen.has(key)) {
+          return;
+        }
+        seen.add(key);
+        addMarker(point);
+      } catch (error) {
+        console.error("[BreatheSmart] Marker skipped", { point, error });
+      }
+    });
+  }
+
+  function addMarker(point) {
+    if (!point || !Number.isFinite(point?.lat) || !Number.isFinite(point?.lon) || !state.markersLayer) {
+      return;
+    }
+
+    const level = point?.level || getAQILevel(point?.aqi);
+    const aqiText = Number.isFinite(point?.aqi) ? String(point.aqi) : "--";
+    const iconSize = point?.isMain ? [48, 48] : [42, 42];
+    const icon = L.divIcon({
+      className: "",
+      html: `<span class="aqi-marker ${escapeHTML(level?.key || "unknown")}">${escapeHTML(aqiText)}</span>`,
+      iconSize,
+      iconAnchor: [iconSize[0] / 2, iconSize[1] / 2]
+    });
+
+    const marker = L.marker([point.lat, point.lon], { icon });
+    marker.on("click", function () {
+      focusPoint(point);
+    });
+    marker.addTo(state.markersLayer);
+  }
+
+  function focusPoint(point) {
+    if (!point) {
+      return;
+    }
+
+    if (state.map && Number.isFinite(point?.lat) && Number.isFinite(point?.lon)) {
+      try {
+        state.map.setView([point.lat, point.lon], point?.isMain ? 11 : 12);
+      } catch (error) {
+        console.error("[BreatheSmart] Failed to focus map point", error);
+      }
+    }
+
+    openModal(point);
+  }
+
+  function openModal(point) {
+    if (!point || !els.modal || !els.modalTitle || !els.modalBody) {
+      console.warn("[BreatheSmart] Modal unavailable; point details skipped", point);
+      return;
+    }
+
+    try {
+      setText(els.modalTitle, point?.name || "AQI sample");
+
+      const pollutantMarkup = Object.keys(POLLUTANT_LABELS).map(function (key) {
+        const value = point?.pollutants?.[key];
+        const unit = point?.units?.[key] || "";
+        const displayValue = Number.isFinite(value) ? formatNumber(value) : "--";
+        const displayUnit = unit ? ` ${escapeHTML(unit)}` : "";
+
+        return `
+          <div class="detail-item">
+            <span>${escapeHTML(POLLUTANT_LABELS[key])}</span>
+            <strong>${escapeHTML(displayValue)}${displayUnit}</strong>
+          </div>
+        `;
+      }).join("");
+
+      els.modalBody.innerHTML = `
+        <div class="detail-grid">
+          <div class="detail-item">
+            <span>US AQI</span>
+            <strong>${Number.isFinite(point?.aqi) ? point.aqi : "--"}</strong>
+          </div>
+          <div class="detail-item">
+            <span>Status</span>
+            <strong>${escapeHTML(point?.level?.label || "Unknown")}</strong>
+          </div>
+          <div class="detail-item">
+            <span>Latitude</span>
+            <strong>${Number.isFinite(point?.lat) ? point.lat.toFixed(4) : "--"}</strong>
+          </div>
+          <div class="detail-item">
+            <span>Longitude</span>
+            <strong>${Number.isFinite(point?.lon) ? point.lon.toFixed(4) : "--"}</strong>
+          </div>
+        </div>
+        <div class="detail-item">
+          <span>Grid sample</span>
+          <strong>${escapeHTML(point?.sampleLabel || "Selected point")}</strong>
+        </div>
+        <div class="detail-item">
+          <span>Last update</span>
+          <strong>${escapeHTML(point?.time || "Time unavailable")}</strong>
+        </div>
+        <div class="detail-grid">${pollutantMarkup}</div>
+      `;
+
+      if (typeof els.modal.showModal === "function") {
+        els.modal.showModal();
+      } else {
+        els.modal.setAttribute("open", "open");
+      }
+    } catch (error) {
+      console.error("[BreatheSmart] Failed to open modal", error);
+    }
+  }
+
+  function closeModal() {
+    if (!els.modal) {
+      return;
+    }
+
+    try {
+      if (typeof els.modal.close === "function") {
+        els.modal.close();
+      } else {
+        els.modal.removeAttribute("open");
+      }
+    } catch (error) {
+      console.error("[BreatheSmart] Failed to close modal", error);
+    }
+  }
+
+  function resetMapView() {
+    if (!state.map) {
+      return;
+    }
+
+    const coords = Array.isArray(state.selectedCoords) ? state.selectedCoords : DEFAULT_COORDS;
+
+    try {
+      state.map.setView(coords, 11);
+    } catch (error) {
+      console.error("[BreatheSmart] Failed to reset map view", error);
+    }
+  }
+
+  function showFallbackUI(label) {
+    const fallbackPoint = {
+      name: label || DEFAULT_CITY,
+      sampleLabel: "Fallback",
+      sampleKey: "fallback",
+      isMain: true,
+      aqi: null,
+      level: getAQILevel(null),
+      lat: state.selectedCoords?.[0] || DEFAULT_COORDS[0],
+      lon: state.selectedCoords?.[1] || DEFAULT_COORDS[1],
+      time: "Live data unavailable",
       pollutants: {},
-      raw
+      units: {}
     };
-  }
 
-  function normalizePollutants(iaqi) {
-    return Object.keys(POLLUTANT_LABELS).reduce(function (acc, key) {
-      const value = iaqi?.[key]?.v;
-      acc[key] = Number.isFinite(Number(value)) ? Number(value) : null;
-      return acc;
-    }, {});
-  }
-
-  function parseAQI(value) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : null;
+    updateMainUI(fallbackPoint);
+    state.mainPoint = fallbackPoint;
+    state.nearbySamples = [];
+    renderNearbyList([]);
+    renderMapMarkers();
   }
 
   function getAQILevel(aqi) {
@@ -410,45 +744,13 @@
       return {
         key: "unknown",
         label: "Unknown",
-        color: "#6b7b83",
-        tip: "AQI data is unavailable for this station. Try another station or city."
+        tip: "AQI data is unavailable for this location. Try another city or sample point."
       };
     }
 
     return AQI_LEVELS.find(function (level) {
       return aqi <= level.max;
     }) || AQI_LEVELS[AQI_LEVELS.length - 1];
-  }
-
-  function updateSidebar(station) {
-    if (!station) {
-      return;
-    }
-
-    const level = station.level || getAQILevel(station.aqi);
-
-    setText(els.cityName, station.name || "Unknown station");
-    setText(els.lastUpdated, station.time ? `Updated ${station.time}` : "Update time unavailable");
-    setText(els.aqiNumber, Number.isFinite(station.aqi) ? station.aqi : "--");
-    setText(els.aqiLabel, level.label || "Unknown");
-    setText(els.healthTip, level.tip || "AQI guidance is unavailable for this station.");
-
-    updateAQIBadge(level.key);
-    updateScaleMarker(station.aqi);
-    renderPollutants(station.pollutants);
-  }
-
-  function updateSelectedStation(station) {
-    if (!station) {
-      return;
-    }
-
-    state.lastStation = station;
-    state.selectedCoords = [station.lat, station.lon];
-
-    if (state.map && Number.isFinite(station.lat) && Number.isFinite(station.lon)) {
-      state.map.setView([station.lat, station.lon], 11);
-    }
   }
 
   function updateAQIBadge(levelKey) {
@@ -468,214 +770,15 @@
       return;
     }
 
-    const value = Number.isFinite(aqi) ? Math.min(aqi, MAX_AQI_FOR_SCALE) : 0;
+    const value = Number.isFinite(aqi) ? Math.min(Math.max(aqi, 0), MAX_AQI_FOR_SCALE) : 0;
     const percent = Math.max(0, Math.min(100, (value / MAX_AQI_FOR_SCALE) * 100));
     els.scaleMarker.style.left = `${percent}%`;
   }
 
-  function renderPollutants(pollutants) {
-    if (!els.pollutantsGrid) {
-      return;
-    }
+  function showLoading(isVisible, message) {
+    state.isLoading = Boolean(isVisible);
 
-    const safePollutants = pollutants || {};
-    const html = Object.keys(POLLUTANT_LABELS).map(function (key) {
-      const value = safePollutants?.[key];
-      const displayValue = Number.isFinite(value) ? value : "--";
-
-      return `
-        <article class="pollutant-tile">
-          <span>${escapeHTML(POLLUTANT_LABELS[key])}</span>
-          <strong>${escapeHTML(String(displayValue))}</strong>
-        </article>
-      `;
-    }).join("");
-
-    els.pollutantsGrid.innerHTML = html;
-  }
-
-  function renderNearbyStations(stations) {
-    const safeStations = Array.isArray(stations) ? stations : [];
-
-    setText(els.stationCount, `${safeStations.length} found`);
-
-    if (!els.stationsList) {
-      return;
-    }
-
-    if (!safeStations.length) {
-      els.stationsList.innerHTML = `<li class="empty-state">No nearby stations available.</li>`;
-      return;
-    }
-
-    const fragment = document.createDocumentFragment();
-
-    safeStations.forEach(function (station) {
-      const item = document.createElement("li");
-      const button = document.createElement("button");
-      button.className = "station-item";
-      button.type = "button";
-      button.innerHTML = `
-        <span class="station-row">
-          <span class="station-name">${escapeHTML(station.name)}</span>
-          <span class="station-aqi">${Number.isFinite(station.aqi) ? station.aqi : "--"}</span>
-        </span>
-        <span class="station-meta">${escapeHTML(station.level?.label || "Unknown")} · ${escapeHTML(station.time || "Time unavailable")}</span>
-      `;
-      button.addEventListener("click", function () {
-        focusStation(station);
-      });
-      item.appendChild(button);
-      fragment.appendChild(item);
-    });
-
-    els.stationsList.replaceChildren(fragment);
-  }
-
-  function renderMapMarkers(stations) {
-    if (!state.map || !state.markersLayer) {
-      return;
-    }
-
-    state.markersLayer.clearLayers();
-
-    if (state.lastStation) {
-      addMarker(state.lastStation, true);
-    }
-
-    const safeStations = Array.isArray(stations) ? stations : [];
-    safeStations.forEach(function (station) {
-      try {
-        addMarker(station, false);
-      } catch (error) {
-        console.warn("[BreatheSmart] Marker skipped", station, error);
-      }
-    });
-  }
-
-  function addMarker(station, isSelected) {
-    if (!station || !Number.isFinite(station.lat) || !Number.isFinite(station.lon) || !state.markersLayer) {
-      return;
-    }
-
-    const level = station.level || getAQILevel(station.aqi);
-    const icon = L.divIcon({
-      className: "",
-      html: `<span class="aqi-marker ${escapeHTML(level.key)}">${Number.isFinite(station.aqi) ? station.aqi : "--"}</span>`,
-      iconSize: isSelected ? [48, 48] : [42, 42],
-      iconAnchor: [21, 21]
-    });
-
-    const marker = L.marker([station.lat, station.lon], { icon });
-    marker.on("click", function () {
-      focusStation(station);
-    });
-    marker.addTo(state.markersLayer);
-  }
-
-  function focusStation(station) {
-    if (!station) {
-      return;
-    }
-
-    if (state.map && Number.isFinite(station.lat) && Number.isFinite(station.lon)) {
-      state.map.setView([station.lat, station.lon], 13);
-    }
-
-    openStationModal(station);
-  }
-
-  function openStationModal(station) {
-    if (!station || !els.modal || !els.modalTitle || !els.modalBody) {
-      return;
-    }
-
-    setText(els.modalTitle, station.name || "Station");
-
-    const pollutants = station.pollutants || {};
-    const pollutantMarkup = Object.keys(POLLUTANT_LABELS).map(function (key) {
-      const value = pollutants?.[key];
-      return `
-        <div class="detail-item">
-          <span>${escapeHTML(POLLUTANT_LABELS[key])}</span>
-          <strong>${Number.isFinite(value) ? escapeHTML(String(value)) : "--"}</strong>
-        </div>
-      `;
-    }).join("");
-
-    els.modalBody.innerHTML = `
-      <div class="detail-grid">
-        <div class="detail-item">
-          <span>AQI</span>
-          <strong>${Number.isFinite(station.aqi) ? station.aqi : "--"}</strong>
-        </div>
-        <div class="detail-item">
-          <span>Status</span>
-          <strong>${escapeHTML(station.level?.label || "Unknown")}</strong>
-        </div>
-        <div class="detail-item">
-          <span>Latitude</span>
-          <strong>${Number.isFinite(station.lat) ? station.lat.toFixed(4) : "--"}</strong>
-        </div>
-        <div class="detail-item">
-          <span>Longitude</span>
-          <strong>${Number.isFinite(station.lon) ? station.lon.toFixed(4) : "--"}</strong>
-        </div>
-      </div>
-      <div class="detail-item">
-        <span>Last update</span>
-        <strong>${escapeHTML(station.time || "Time unavailable")}</strong>
-      </div>
-      <div class="detail-grid">${pollutantMarkup}</div>
-    `;
-
-    if (typeof els.modal.showModal === "function") {
-      els.modal.showModal();
-    } else {
-      els.modal.setAttribute("open", "open");
-    }
-  }
-
-  function closeStationModal() {
-    if (!els.modal) {
-      return;
-    }
-
-    if (typeof els.modal.close === "function") {
-      els.modal.close();
-    } else {
-      els.modal.removeAttribute("open");
-    }
-  }
-
-  function resetMapView() {
-    if (!state.map) {
-      return;
-    }
-
-    state.map.setView(state.selectedCoords || DEFAULT_COORDS, 11);
-  }
-
-  function showFallbackUI(city) {
-    const fallbackStation = {
-      name: city || DEFAULT_CITY,
-      aqi: null,
-      level: getAQILevel(null),
-      lat: state.selectedCoords?.[0] || DEFAULT_COORDS[0],
-      lon: state.selectedCoords?.[1] || DEFAULT_COORDS[1],
-      time: "Live data unavailable",
-      pollutants: {}
-    };
-
-    updateSidebar(fallbackStation);
-    renderNearbyStations([]);
-    renderMapMarkers([]);
-  }
-
-  function setLoading(isLoading, message) {
-    state.isLoading = Boolean(isLoading);
-
-    if (els.loadingMessage && message) {
+    if (message) {
       setText(els.loadingMessage, message);
     }
 
@@ -683,19 +786,8 @@
     els.loadingOverlay?.setAttribute("aria-hidden", state.isLoading ? "false" : "true");
   }
 
-  function setControlState(isDisabled) {
-    [els.searchButton, els.locationButton, els.mapResetButton].forEach(function (control) {
-      if (control) {
-        control.disabled = Boolean(isDisabled);
-      }
-    });
-  }
-
   function showError(message) {
-    if (els.errorMessage) {
-      setText(els.errorMessage, message || "Something went wrong.");
-    }
-
+    setText(els.errorMessage, message || "Something went wrong while loading AQI data.");
     els.errorOverlay?.classList.add("is-visible");
     els.errorOverlay?.setAttribute("aria-hidden", "false");
   }
@@ -721,6 +813,45 @@
     if (mode === "error") {
       els.liveStatus.classList.add("is-error");
     }
+  }
+
+  function setControlState(isDisabled) {
+    [els.searchButton, els.locationButton, els.mapResetButton].forEach(function (control) {
+      if (control) {
+        control.disabled = Boolean(isDisabled);
+      }
+    });
+  }
+
+  function parseNumber(value) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function formatNumber(value) {
+    if (!Number.isFinite(value)) {
+      return "--";
+    }
+
+    return Math.abs(value) >= 100 ? String(Math.round(value)) : value.toFixed(1);
+  }
+
+  function formatPlaceName(place) {
+    const parts = [
+      place?.name,
+      place?.admin1,
+      place?.country
+    ].filter(Boolean);
+
+    return parts.length ? parts.join(", ") : DEFAULT_CITY;
+  }
+
+  function formatCoords(latitude, longitude) {
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      return "Coordinates unavailable";
+    }
+
+    return `${latitude.toFixed(3)}, ${longitude.toFixed(3)}`;
   }
 
   function setText(element, value) {
