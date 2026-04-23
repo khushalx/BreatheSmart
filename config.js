@@ -1,0 +1,5 @@
+const CONFIG = {
+  WAQI_TOKEN: "0581b46e9868d14d25348a3897405534e8a4ebf3"
+};
+
+window.CONFIG = CONFIG;

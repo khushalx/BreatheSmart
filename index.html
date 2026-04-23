@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="BreatheSmart is a live air quality dashboard powered by WAQI and Leaflet maps.">
+  <title>BreatheSmart | AQI Dashboard</title>
+
+  <link rel="preconnect" href="https://unpkg.com">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIINfQnxYuJjDAU8fY/2wqMfoO6x2xpbLA="
+    crossorigin="">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <noscript>
+    <section class="noscript-warning">
+      BreatheSmart needs JavaScript enabled to load live AQI data and the map.
+    </section>
+  </noscript>
+
+  <div class="app-shell">
+    <header class="topbar" aria-label="BreatheSmart controls">
+      <a class="brand" href="/" aria-label="BreatheSmart home">
+        <span class="brand-mark" aria-hidden="true">BS</span>
+        <span class="brand-copy">
+          <strong>BreatheSmart</strong>
+          <small>Live Air Quality</small>
+        </span>
+      </a>
+
+      <form class="search-form" id="city-search-form" role="search">
+        <label class="sr-only" for="city-search-input">Search city</label>
+        <input
+          id="city-search-input"
+          name="city"
+          type="search"
+          inputmode="search"
+          autocomplete="off"
+          placeholder="Search city, e.g. Delhi"
+          aria-label="Search city">
+        <button type="submit" id="city-search-button">Search</button>
+      </form>
+
+      <div class="topbar-actions">
+        <div class="live-status" id="live-status" role="status" aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="live-status-text">Preparing dashboard</span>
+        </div>
+        <button class="location-button" id="my-location-button" type="button">
+          My Location
+        </button>
+      </div>
+    </header>
+
+    <main class="dashboard">
+      <aside class="sidebar" aria-label="AQI summary">
+        <section class="aqi-card" aria-labelledby="city-name">
+          <div class="city-meta">
+            <div>
+              <p class="eyebrow">Selected station</p>
+              <h1 id="city-name">Delhi</h1>
+            </div>
+            <span class="last-updated" id="last-updated">Waiting for live data</span>
+          </div>
+
+          <div class="aqi-hero">
+            <div>
+              <p class="eyebrow">Current AQI</p>
+              <div class="aqi-number" id="aqi-number">--</div>
+            </div>
+            <span class="aqi-badge" id="aqi-label">Unknown</span>
+          </div>
+
+          <div class="scale-block">
+            <div class="scale-labels" aria-hidden="true">
+              <span>0</span>
+              <span>50</span>
+              <span>100</span>
+              <span>150</span>
+              <span>200</span>
+              <span>300+</span>
+            </div>
+            <div class="aqi-scale" aria-label="AQI color scale">
+              <span class="scale-marker" id="aqi-scale-marker"></span>
+            </div>
+          </div>
+
+          <div class="health-tip">
+            <p class="eyebrow">Health tip</p>
+            <p id="health-tip-text">AQI guidance will appear after live data loads.</p>
+          </div>
+        </section>
+
+        <section class="panel" aria-labelledby="pollutants-title">
+          <div class="panel-heading">
+            <h2 id="pollutants-title">Pollutants</h2>
+            <span id="pollutants-source">WAQI feed</span>
+          </div>
+          <div class="pollutants-grid" id="pollutants-grid">
+            <article class="pollutant-tile">
+              <span>PM2.5</span>
+              <strong>--</strong>
+            </article>
+            <article class="pollutant-tile">
+              <span>PM10</span>
+              <strong>--</strong>
+            </article>
+            <article class="pollutant-tile">
+              <span>O3</span>
+              <strong>--</strong>
+            </article>
+            <article class="pollutant-tile">
+              <span>NO2</span>
+              <strong>--</strong>
+            </article>
+          </div>
+        </section>
+
+        <section class="panel" aria-labelledby="legend-title">
+          <h2 id="legend-title">AQI Legend</h2>
+          <ul class="aqi-legend" id="aqi-legend">
+            <li><span class="legend-swatch good"></span>Good <strong>0-50</strong></li>
+            <li><span class="legend-swatch moderate"></span>Moderate <strong>51-100</strong></li>
+            <li><span class="legend-swatch unhealthy-sensitive"></span>Sensitive <strong>101-150</strong></li>
+            <li><span class="legend-swatch unhealthy"></span>Unhealthy <strong>151-200</strong></li>
+            <li><span class="legend-swatch very-unhealthy"></span>Very Unhealthy <strong>201-300</strong></li>
+            <li><span class="legend-swatch hazardous"></span>Hazardous <strong>301+</strong></li>
+          </ul>
+        </section>
+
+        <section class="panel stations-panel" aria-labelledby="stations-title">
+          <div class="panel-heading">
+            <h2 id="stations-title">Nearby Stations</h2>
+            <span id="station-count">0 found</span>
+          </div>
+          <ul class="stations-list" id="nearby-stations-list">
+            <li class="empty-state">Nearby stations will load with the map.</li>
+          </ul>
+        </section>
+      </aside>
+
+      <section class="map-area" aria-label="AQI map">
+        <div class="map-toolbar">
+          <div>
+            <p class="eyebrow">Map view</p>
+            <h2>Live AQI Stations</h2>
+          </div>
+          <button class="map-reset-button" id="map-reset-button" type="button">Reset View</button>
+        </div>
+        <div id="map" class="map" role="application" aria-label="Interactive AQI station map"></div>
+      </section>
+    </main>
+  </div>
+
+  <div class="loading-overlay" id="loading-overlay" aria-live="polite" aria-hidden="true">
+    <div class="overlay-panel">
+      <span class="loader" aria-hidden="true"></span>
+      <p id="loading-message">Loading live AQI data...</p>
+    </div>
+  </div>
+
+  <div class="error-overlay" id="error-overlay" aria-live="assertive" aria-hidden="true">
+    <div class="overlay-panel error-panel">
+      <h2>Unable to load AQI data</h2>
+      <p id="error-message">Please check your API token or network connection.</p>
+      <button id="error-dismiss-button" type="button">Dismiss</button>
+    </div>
+  </div>
+
+  <dialog class="station-modal" id="station-modal" aria-labelledby="station-modal-title">
+    <div class="modal-header">
+      <div>
+        <p class="eyebrow">Station details</p>
+        <h2 id="station-modal-title">Station</h2>
+      </div>
+      <button class="modal-close-button" id="station-modal-close" type="button" aria-label="Close station details">
+        Close
+      </button>
+    </div>
+    <div class="modal-body" id="station-modal-body">
+      <p>Station details will appear here.</p>
+    </div>
+  </dialog>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
