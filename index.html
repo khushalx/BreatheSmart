@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="BreatheSmart is a live air quality dashboard powered by WAQI and Leaflet maps.">
+  <meta name="description" content="BreatheSmart is a live air quality dashboard powered by Open-Meteo and Leaflet maps.">
   <title>BreatheSmart | AQI Dashboard</title>
 
   <link rel="preconnect" href="https://unpkg.com">
@@ -58,7 +58,7 @@
         <section class="aqi-card" aria-labelledby="city-name">
           <div class="city-meta">
             <div>
-              <p class="eyebrow">Selected station</p>
+              <p class="eyebrow">Selected location</p>
               <h1 id="city-name">Delhi</h1>
             </div>
             <span class="last-updated" id="last-updated">Waiting for live data</span>
@@ -95,7 +95,7 @@
         <section class="panel" aria-labelledby="pollutants-title">
           <div class="panel-heading">
             <h2 id="pollutants-title">Pollutants</h2>
-            <span id="pollutants-source">WAQI feed</span>
+            <span id="pollutants-source">Open-Meteo grid</span>
           </div>
           <div class="pollutants-grid" id="pollutants-grid">
             <article class="pollutant-tile">
@@ -131,11 +131,11 @@
 
         <section class="panel stations-panel" aria-labelledby="stations-title">
           <div class="panel-heading">
-            <h2 id="stations-title">Nearby Stations</h2>
+            <h2 id="stations-title">Nearby AQI Samples</h2>
             <span id="station-count">0 found</span>
           </div>
           <ul class="stations-list" id="nearby-stations-list">
-            <li class="empty-state">Nearby stations will load with the map.</li>
+            <li class="empty-state">Nearby sampled AQI points will load with the map.</li>
           </ul>
         </section>
       </aside>
@@ -144,11 +144,11 @@
         <div class="map-toolbar">
           <div>
             <p class="eyebrow">Map view</p>
-            <h2>Live AQI Stations</h2>
+            <h2>Live AQI Samples</h2>
           </div>
           <button class="map-reset-button" id="map-reset-button" type="button">Reset View</button>
         </div>
-        <div id="map" class="map" role="application" aria-label="Interactive AQI station map"></div>
+        <div id="map" class="map" role="application" aria-label="Interactive AQI sample map"></div>
       </section>
     </main>
   </div>
@@ -163,7 +163,7 @@
   <div class="error-overlay" id="error-overlay" aria-live="assertive" aria-hidden="true">
     <div class="overlay-panel error-panel">
       <h2>Unable to load AQI data</h2>
-      <p id="error-message">Please check your API token or network connection.</p>
+      <p id="error-message">Please check your network connection and try again.</p>
       <button id="error-dismiss-button" type="button">Dismiss</button>
     </div>
   </div>
@@ -171,15 +171,15 @@
   <dialog class="station-modal" id="station-modal" aria-labelledby="station-modal-title">
     <div class="modal-header">
       <div>
-        <p class="eyebrow">Station details</p>
-        <h2 id="station-modal-title">Station</h2>
+        <p class="eyebrow">AQI sample details</p>
+        <h2 id="station-modal-title">AQI sample</h2>
       </div>
-      <button class="modal-close-button" id="station-modal-close" type="button" aria-label="Close station details">
+      <button class="modal-close-button" id="station-modal-close" type="button" aria-label="Close AQI sample details">
         Close
       </button>
     </div>
     <div class="modal-body" id="station-modal-body">
-      <p>Station details will appear here.</p>
+      <p>AQI sample details will appear here.</p>
     </div>
   </dialog>
 
